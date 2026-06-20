@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Signal Board — AI-Automation Stock Screener</title>
+<style>
+  :root {
+    --ink: #1b1f23;
+    --paper: #f7f5f0;
+    --paper-raised: #ffffff;
+    --line: #dcd8cf;
+    --muted: #6b6660;
+    --up: #1f7a4d;
+    --up-bg: #e7f3ec;
+    --down: #b8413a;
+    --down-bg: #f7e9e7;
+    --accent: #2b4c7e;
+    --accent-bg: #e8edf5;
+    --warn-bg: #fbf3df;
+    --mono: 'IBM Plex Mono', 'SF Mono', Consolas, monospace;
+    --serif: 'Source Serif 4', Georgia, serif;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 32px 24px 80px;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 16px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .title-block h1 {
+    font-family: var(--serif);
+    font-size: 30px;
+    font-weight: 600;
+    margin: 0 0 4px 0;
+    letter-spacing: -0.01em;
+  }
+
+  .title-block p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13.5px;
+  }
+
+  .refresh-info {
+    text-align: right;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+
+  #refreshBtn {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    background: var(--ink);
+    color: var(--paper);
+    border: none;
+    padding: 8px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 6px;
+  }
+  #refreshBtn:hover { background: #34393f; }
+  #refreshBtn:disabled { opacity: 0.5; cursor: wait; }
+
+  /* Disclaimer strip */
+  .disclaimer {
+    background: var(--warn-bg);
+    border: 1px solid #e3d6a8;
+    border-radius: 4px;
+    padding: 10px 14px;
+    font-size: 12.5px;
+    color: #6b5a1f;
+    margin: 18px 0 28px;
+    line-height: 1.5;
+  }
+
+  /* Legend / how scoring works */
+  .legend {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-bottom: 32px;
+  }
+
+  .legend-card {
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 14px 16px;
+  }
+
+  .legend-card .pts {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .legend-card h3 {
+    margin: 4px 0 6px;
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .legend-card p {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.45;
+  }
+
+  /* Add ticker bar */
+  .add-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 28px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .add-bar input, .add-bar select {
+    font-family: var(--sans);
+    font-size: 13.5px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--paper-raised);
+  }
+
+  .add-bar input { width: 110px; text-transform: uppercase; }
+
+  .add-bar button {
+    font-family: var(--sans);
+    font-size: 13.5px;
+    font-weight: 600;
+    padding: 8px 14px;
+    border-radius: 4px;
+    border: 1px solid var(--ink);
+    background: var(--paper-raised);
+    cursor: pointer;
+  }
+  .add-bar button:hover { background: var(--ink); color: var(--paper); }
+
+  .add-status { font-size: 12.5px; color: var(--muted); }
+
+  /* Sector sections */
+  .sector {
+    margin-bottom: 36px;
+  }
+
+  .sector-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .sector-head h2 {
+    font-family: var(--serif);
+    font-size: 19px;
+    margin: 0;
+  }
+
+  .sector-head .count {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+
+  /* Stock card row */
+  .stock-row {
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    overflow: hidden;
+    transition: box-shadow 0.15s ease;
+  }
+  .stock-row:hover { box-shadow: 0 1px 6px rgba(0,0,0,0.06); }
+
+  .stock-summary {
+    display: grid;
+    grid-template-columns: 90px 100px 1fr 90px 90px 24px;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    cursor: pointer;
+  }
+
+  .ticker-name {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 15px;
+  }
+
+  .price-block { font-size: 13px; }
+  .price-block .price { font-weight: 600; }
+  .price-block .change { font-family: var(--mono); font-size: 12px; }
+  .change.up { color: var(--up); }
+  .change.down { color: var(--down); }
+
+  .headline-preview {
+    font-size: 12.5px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .score-pill {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 15px;
+    text-align: center;
+    padding: 4px 0;
+    border-radius: 4px;
+  }
+  .score-hot { background: var(--up-bg); color: var(--up); }
+  .score-mid { background: var(--accent-bg); color: var(--accent); }
+  .score-cold { background: #f0eee8; color: var(--muted); }
+
+  .remove-btn {
+    font-size: 16px;
+    color: var(--muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: right;
+  }
+  .remove-btn:hover { color: var(--down); }
+
+  .chevron {
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    transition: transform 0.15s ease;
+  }
+  .stock-row.open .chevron { transform: rotate(90deg); }
+
+  /* Expanded detail */
+  .stock-detail {
+    display: none;
+    padding: 4px 16px 18px;
+    border-top: 1px solid var(--line);
+  }
+  .stock-row.open .stock-detail { display: block; }
+
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-top: 12px;
+  }
+
+  .detail-card {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 12px;
+  }
+
+  .detail-card .label {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .detail-card .explain {
+    font-size: 13px;
+    margin-top: 6px;
+    line-height: 1.45;
+  }
+
+  .updated-note {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--muted);
+    margin-top: 10px;
+  }
+
+  /* Loading / empty states */
+  .state-msg {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .error-msg {
+    background: var(--down-bg);
+    color: var(--down);
+    border: 1px solid #e0b8b4;
+    border-radius: 5px;
+    padding: 12px 16px;
+    font-size: 13px;
+    margin-bottom: 20px;
+  }
+
+  @media (max-width: 720px) {
+    .legend { grid-template-columns: 1fr; }
+    .stock-summary {
+      grid-template-columns: 70px 1fr 60px 20px;
+    }
+    .price-block, .headline-preview { display: none; }
+    .detail-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="title-block">
+      <h1>Signal Board</h1>
+      <p>AI-automation beneficiaries — momentum, news &amp; sentiment, scored together</p>
+    </div>
+    <div class="refresh-info">
+      <div id="lastUpdated">Not loaded yet</div>
+      <button id="refreshBtn" onclick="loadData()">Refresh now</button>
+    </div>
+  </header>
+
+  <div class="disclaimer">
+    This is a research tool, not financial advice. Scores reflect short-term price, news and analyst-sentiment patterns only — they don't predict future returns. Data refreshes periodically (not real-time tick-by-tick). Always do your own research before trading.
+  </div>
+
+  <div class="legend">
+    <div class="legend-card">
+      <div class="pts">Up to 40 pts</div>
+      <h3>📊 Momentum</h3>
+      <p>How much the price moved this week, and whether trading volume backs up the move. A big move on heavy volume scores higher than the same move on quiet volume.</p>
+    </div>
+    <div class="legend-card">
+      <div class="pts">Up to 30 pts</div>
+      <h3>📰 News</h3>
+      <p>How recent the latest headline is, and whether its wording leans positive or negative. Fresh news counts more than stale news.</p>
+    </div>
+    <div class="legend-card">
+      <div class="pts">Up to 30 pts</div>
+      <h3>📈 Sentiment</h3>
+      <p>Whether Wall Street analysts have been turning more bullish or bearish recently, based on their published ratings.</p>
+    </div>
+  </div>
+
+  <div class="add-bar">
+    <input type="text" id="newTicker" placeholder="e.g. AAPL" maxlength="6">
+    <select id="newSector">
+      <option value="My Tickers">My Tickers</option>
+      <option value="Insurance & Back-Office Automation">Insurance &amp; Back-Office Automation</option>
+      <option value="Freight, Logistics & Supply Chain">Freight, Logistics &amp; Supply Chain</option>
+      <option value="Industrial Automation Suppliers">Industrial Automation Suppliers</option>
+    </select>
+    <button onclick="addTicker()">+ Add to watchlist</button>
+    <span class="add-status" id="addStatus"></span>
+  </div>
+
+  <div id="content">
+    <div class="state-msg">Loading your watchlist…</div>
+  </div>
+
+</div>
+
+<script>
+const API_BASE = ''; // same-origin, backend serves this file too
+
+function scoreClass(score) {
+  if (score >= 60) return 'score-hot';
+  if (score >= 35) return 'score-mid';
+  return 'score-cold';
+}
+
+function fmtChange(pct) {
+  if (pct === null || pct === undefined) return '—';
+  const sign = pct >= 0 ? '+' : '';
+  return `${sign}${pct.toFixed(1)}%`;
+}
+
+function renderStock(stock, sectorKey) {
+  const id = `${sectorKey}-${stock.ticker}`.replace(/[^a-zA-Z0-9]/g, '_');
+  const dayChange = stock.day_change_pct;
+  const changeClass = dayChange >= 0 ? 'up' : 'down';
+  const headline = stock.news && stock.news.headline ? stock.news.headline : 'No recent headline';
+  const score = stock.total_score ?? 0;
+
+  return `
+    <div class="stock-row" id="row-${id}">
+      <div class="stock-summary" onclick="toggleRow('${id}')">
+        <div class="ticker-name">${stock.ticker}</div>
+        <div class="price-block">
+          <div class="price">${stock.current_price ? '$' + stock.current_price.toFixed(2) : '—'}</div>
+          <div class="change ${changeClass}">${fmtChange(dayChange)}</div>
+        </div>
+        <div class="headline-preview">${headline}</div>
+        <div class="score-pill ${scoreClass(score)}">${score}</div>
+        <button class="remove-btn" onclick="event.stopPropagation(); removeTicker('${sectorKey}', '${stock.ticker}')" title="Remove from watchlist">✕</button>
+        <div class="chevron">▶</div>
+      </div>
+      <div class="stock-detail">
+        <div class="detail-grid">
+          <div class="detail-card">
+            <div class="label"><span>Momentum</span><span>${stock.momentum.points} pts</span></div>
+            <div class="explain">${stock.momentum.explain}</div>
+          </div>
+          <div class="detail-card">
+            <div class="label"><span>News</span><span>${stock.news.points} pts</span></div>
+            <div class="explain">${stock.news.explain}</div>
+          </div>
+          <div class="detail-card">
+            <div class="label"><span>Sentiment</span><span>${stock.sentiment.points} pts</span></div>
+            <div class="explain">${stock.sentiment.explain}</div>
+          </div>
+        </div>
+        <div class="updated-note">Updated ${new Date(stock.last_updated).toLocaleString()}</div>
+      </div>
+    </div>
+  `;
+}
+
+function toggleRow(id) {
+  const row = document.getElementById(`row-${id}`);
+  row.classList.toggle('open');
+}
+
+async function loadData() {
+  const btn = document.getElementById('refreshBtn');
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  const content = document.getElementById('content');
+
+  try {
+    const res = await fetch(`${API_BASE}/api/screen`);
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.detail || `Server error (${res.status})`);
+    }
+    const data = await res.json();
+    renderAll(data);
+    document.getElementById('lastUpdated').textContent =
+      'Last updated: ' + new Date().toLocaleString();
+  } catch (err) {
+    content.innerHTML = `<div class="error-msg">Couldn't load data: ${err.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Refresh now';
+  }
+}
+
+function renderAll(data) {
+  const content = document.getElementById('content');
+  const sectors = Object.keys(data);
+  if (sectors.length === 0) {
+    content.innerHTML = `<div class="state-msg">No tickers in your watchlist yet. Add one above.</div>`;
+    return;
+  }
+
+  let html = '';
+  for (const sector of sectors) {
+    const stocks = data[sector];
+    if (!stocks || stocks.length === 0) continue;
+    html += `
+      <div class="sector">
+        <div class="sector-head">
+          <h2>${sector}</h2>
+          <span class="count">${stocks.length} tracked</span>
+        </div>
+        ${stocks.map(s => renderStock(s, sector)).join('')}
+      </div>
+    `;
+  }
+  content.innerHTML = html || `<div class="state-msg">No data to show.</div>`;
+}
+
+async function addTicker() {
+  const input = document.getElementById('newTicker');
+  const sectorSelect = document.getElementById('newSector');
+  const status = document.getElementById('addStatus');
+  const ticker = input.value.trim().toUpperCase();
+  if (!ticker) return;
+
+  status.textContent = 'Adding…';
+  try {
+    const res = await fetch(`${API_BASE}/api/add-ticker`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker, sector: sectorSelect.value }),
+    });
+    if (!res.ok) throw new Error('Could not add ticker');
+    input.value = '';
+    status.textContent = `Added ${ticker}. Refreshing…`;
+    await loadData();
+    status.textContent = '';
+  } catch (err) {
+    status.textContent = `Error: ${err.message}`;
+  }
+}
+
+async function removeTicker(sector, ticker) {
+  try {
+    const res = await fetch(`${API_BASE}/api/ticker/${encodeURIComponent(sector)}/${encodeURIComponent(ticker)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Could not remove ticker');
+    await loadData();
+  } catch (err) {
+    alert('Error removing ticker: ' + err.message);
+  }
+}
+
+document.getElementById('newTicker').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') addTicker();
+});
+
+// Initial load
+loadData();
+</script>
+</body>
+</html>
