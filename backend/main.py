@@ -5,9 +5,22 @@ Fetches price/volume and news data from Finnhub, computes a composite
 "momentum + news + sentiment" score per ticker, and serves a simple
 dashboard + JSON API.
 
+IMPORTANT DATA NOTE: Finnhub's free tier does not include the
+/stock/candle (historical OHLCV) endpoint. To still measure short-term
+momentum without that endpoint, this app builds its own price history by
+recording each ticker's quote every time the dashboard is refreshed, and
+storing the last ~7 days of snapshots in a small local file. Momentum is
+then computed from that self-collected history. This means: the longer
+you let the app run and refresh, the more accurate the "weekly" momentum
+reading becomes. On a brand new deployment, there will only be a few data
+points until a week of refreshes has accumulated -- this is expected, not
+a bug, and is explained on the dashboard itself.
+
 Plain-language scoring logic (shown to the user on the dashboard too):
-  - MOMENTUM (0-40 pts): how much the price moved this week, weighted by
-    whether volume confirms the move (big move + big volume = stronger signal)
+  - MOMENTUM (0-40 pts): how much the price has moved since the earliest
+    snapshot we have on record (up to 7 days back), weighted by today's
+    trading range as a proxy for conviction (since free-tier volume-over-
+    time isn't available either)
   - NEWS (0-30 pts): how recent and how positive/negative the latest news is
   - SENTIMENT (0-30 pts): direction of analyst recommendation trend
     (more analysts turning bullish recently = higher score)
@@ -18,6 +31,7 @@ This is a research/screening tool, NOT financial advice and NOT a buy signal.
 
 import os
 import time
+import json
 import statistics
 from datetime import datetime, timedelta
 from typing import Optional
@@ -32,6 +46,13 @@ from cachetools import TTLCache
 
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 FINNHUB_BASE = "https://finnhub.io/api/v1"
+
+# Where we persist our self-collected price history between restarts.
+# Render's free tier has an ephemeral filesystem (it resets on redeploy/
+# restart), so this history rebuilds over time rather than living forever --
+# that's an accepted tradeoff for staying on free hosting + free data.
+HISTORY_FILE = os.path.join(os.path.dirname(__file__), "price_history.json")
+HISTORY_MAX_AGE_DAYS = 8
 
 # Starter watchlist: 3 sectors, liquid large/mid-cap names,
 # chosen as "AI-automation beneficiaries not yet hyped as AI stocks"
@@ -81,17 +102,6 @@ def get_quote(ticker: str):
     return _cached_get(f"{FINNHUB_BASE}/quote", {"symbol": ticker}, f"quote:{ticker}")
 
 
-def get_candles(ticker: str, days: int = 10):
-    """Daily price/volume bars for the past `days` calendar days."""
-    end = int(time.time())
-    start = int((datetime.now() - timedelta(days=days)).timestamp())
-    return _cached_get(
-        f"{FINNHUB_BASE}/stock/candle",
-        {"symbol": ticker, "resolution": "D", "from": start, "to": end},
-        f"candle:{ticker}:{days}",
-    )
-
-
 def get_company_news(ticker: str, days: int = 7):
     """Recent news headlines for the ticker."""
     end = datetime.now()
@@ -116,46 +126,111 @@ def get_recommendation_trends(ticker: str):
     )
 
 
+# ---------- Self-collected price history (works around the missing free candle endpoint) ----------
+
+def _load_history() -> dict:
+    if not os.path.exists(HISTORY_FILE):
+        return {}
+    try:
+        with open(HISTORY_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_history(history: dict):
+    try:
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history, f)
+    except Exception:
+        pass  # if disk write fails, we just lose this snapshot, not fatal
+
+
+def record_snapshot(ticker: str, price: float, day_high: float, day_low: float):
+    """Records today's price as a data point for this ticker's history.
+    Only adds one snapshot per calendar day per ticker (no point storing
+    every 15-minute refresh -- we care about day-to-day movement)."""
+    history = _load_history()
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    ticker_history = history.get(ticker, [])
+
+    # Don't duplicate today's entry if we already recorded one
+    if ticker_history and ticker_history[-1].get("date") == today_str:
+        ticker_history[-1] = {"date": today_str, "price": price, "high": day_high, "low": day_low}
+    else:
+        ticker_history.append({"date": today_str, "price": price, "high": day_high, "low": day_low})
+
+    # Trim anything older than our max window
+    cutoff = (datetime.utcnow() - timedelta(days=HISTORY_MAX_AGE_DAYS)).strftime("%Y-%m-%d")
+    ticker_history = [pt for pt in ticker_history if pt["date"] >= cutoff]
+
+    history[ticker] = ticker_history
+    _save_history(history)
+    return ticker_history
+
+
 # ---------- Scoring logic ----------
 
-def score_momentum(candles: dict) -> dict:
+def score_momentum(ticker: str, quote: dict) -> dict:
     """
-    0-40 points. Looks at:
-      - % price change over the available window (up to ~5 trading days)
-      - whether volume is above its own recent average (confirms the move)
-    Returns the point total plus a plain-language explanation.
+    0-40 points, built WITHOUT the /stock/candle endpoint (not available on
+    Finnhub's free tier). Instead, every time this app is refreshed, it
+    records today's quote into a small local history file. Momentum is then
+    computed by comparing today's price to the EARLIEST snapshot we have on
+    record (up to 7 days back).
+
+    Two components:
+      - Price-change-since-earliest-snapshot (scaled to +/-25 points)
+      - Today's trading range (high-low) as a rough proxy for "conviction",
+        since free-tier doesn't expose historical volume either (0-15 points)
+
+    On a freshly deployed app, there may only be 1-2 days of history so far --
+    in that case we say so plainly rather than pretending it's a full week.
     """
-    if candles.get("s") != "ok" or not candles.get("c") or len(candles["c"]) < 2:
-        return {"points": 0, "explain": "Not enough recent price history available."}
+    price = quote.get("c")
+    day_high = quote.get("h")
+    day_low = quote.get("l")
+    prev_close = quote.get("pc")
 
-    closes = candles["c"]
-    volumes = candles["v"]
+    if not price or not prev_close:
+        return {"points": 0, "explain": "No current price data available from Finnhub."}
 
-    pct_change = (closes[-1] - closes[0]) / closes[0] * 100
-    avg_volume = statistics.mean(volumes[:-1]) if len(volumes) > 1 else volumes[0]
-    latest_volume = volumes[-1]
-    volume_ratio = (latest_volume / avg_volume) if avg_volume else 1.0
+    history = record_snapshot(ticker, price, day_high, day_low)
+
+    if len(history) < 2:
+        return {
+            "points": 0,
+            "explain": (
+                "Just started tracking this stock -- need a few days of "
+                "refreshes before a momentum trend can be shown."
+            ),
+        }
+
+    earliest = history[0]
+    days_span = (
+        datetime.strptime(history[-1]["date"], "%Y-%m-%d")
+        - datetime.strptime(earliest["date"], "%Y-%m-%d")
+    ).days
+    pct_change = (price - earliest["price"]) / earliest["price"] * 100
 
     # Price-change component: scale +/-10% move to +/-25 points, capped
     price_pts = max(min(pct_change, 10), -10) / 10 * 25
 
-    # Volume-confirmation component: 0-15 points based on how far above
-    # average the latest volume is (capped at 2x average for max points)
-    volume_pts = max(min((volume_ratio - 1), 1), 0) * 15
+    # Today's range as a rough "how active is this stock today" proxy
+    range_pct = ((day_high - day_low) / price * 100) if (day_high and day_low and price) else 0
+    range_pts = max(min(range_pct, 5), 0) / 5 * 15  # a >=5% daily range maxes this out
 
-    points = round(price_pts + volume_pts, 1)
-    # Momentum score floor of 0 (a big drop with no volume confirmation
-    # still gets some weight removed but never goes negative on this sub-score)
-    points = max(points, 0) if price_pts < 0 else points
-    points = max(min(points, 40), -25)  # allow negative for clearly bad weeks
+    points = round(price_pts + range_pts, 1)
+    points = max(min(points, 40), -25)
 
     direction = "up" if pct_change >= 0 else "down"
-    vol_note = (
-        f"on {volume_ratio:.1f}x normal volume"
-        if volume_ratio > 1.3
-        else "on roughly normal volume"
+    span_note = f"over the last {days_span} day(s) we've tracked" if days_span > 0 else "today"
+    explain = (
+        f"Price {direction} {abs(pct_change):.1f}% {span_note}; "
+        f"today's trading range is {range_pct:.1f}% of price."
     )
-    explain = f"Price {direction} {abs(pct_change):.1f}% this week, {vol_note}."
+    if days_span < 5:
+        explain += f" (Still building up history -- only {days_span} day(s) so far, not a full week yet.)"
 
     return {"points": points, "explain": explain, "pct_change": round(pct_change, 1)}
 
@@ -252,9 +327,9 @@ def score_sentiment(rec_trends: list) -> dict:
 
 def compute_full_score(ticker: str) -> dict:
     try:
-        candles = get_candles(ticker)
+        quote = get_quote(ticker)
     except Exception:
-        candles = {"s": "no_data"}
+        quote = {}
     try:
         news_items = get_company_news(ticker)
     except Exception:
@@ -263,12 +338,8 @@ def compute_full_score(ticker: str) -> dict:
         rec_trends = get_recommendation_trends(ticker)
     except Exception:
         rec_trends = []
-    try:
-        quote = get_quote(ticker)
-    except Exception:
-        quote = {}
 
-    momentum = score_momentum(candles)
+    momentum = score_momentum(ticker, quote)
     news = score_news(news_items)
     sentiment = score_sentiment(rec_trends)
 
